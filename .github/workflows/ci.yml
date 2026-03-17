@@ -4,10 +4,11 @@ on:
   push:
     branches:
       - main
-      - next
+      - stg
   pull_request:
     branches:
       - main
+      - stg
 
 jobs:
   # Detect which paths changed
@@ -108,7 +109,7 @@ jobs:
     needs: [test-python, build-typescript]
     if: |
       always() &&
-      github.ref == 'refs/heads/next' &&
+      github.ref == 'refs/heads/stg' &&
       github.event_name == 'push' &&
       !contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
@@ -126,11 +127,11 @@ jobs:
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
 
-      - name: Merge next to main
+      - name: Merge stg to main
         run: |
           git fetch origin main
           git checkout main
-          git merge origin/next --no-edit
+          git merge origin/stg --no-edit
           git push origin main
 
-          echo "✅ Merged next → main"
+          echo "✅ Merged stg → main"
