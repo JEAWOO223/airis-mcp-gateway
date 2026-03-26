@@ -692,6 +692,156 @@ class TestRefreshCacheHotOnly:
         assert mcp._tools["shared_tool"].source == "process"
 
 
+class TestLLMToolSelection:
+    """Tests for LLM Tool Selection mode (single airis-exec with tool listing)."""
+
+    def test_generate_tool_listing(self, populated_dynamic_mcp):
+        """generate_tool_listing should group tools by server."""
+        listing = populated_dynamic_mcp.generate_tool_listing()
+
+        assert "memory:" in listing
+        assert "fetch:" in listing
+        assert "create_entities" in listing
+        assert "search_entities" in listing
+        assert "fetch_url" in listing
+
+    def test_generate_tool_listing_empty(self, dynamic_mcp):
+        """generate_tool_listing should still include TOOL_CATALOG entries."""
+        listing = dynamic_mcp.generate_tool_listing()
+        # Should have entries from TOOL_CATALOG even with empty cache
+        assert len(listing) > 0
+
+    def test_generate_tool_listing_sorted(self, populated_dynamic_mcp):
+        """Tool listing should be sorted alphabetically by server."""
+        listing = populated_dynamic_mcp.generate_tool_listing()
+        lines = [l for l in listing.split("\n") if ":" in l]
+        server_names = [l.split(":")[0].strip() for l in lines]
+        # Filter to only the servers we populated (others from TOOL_CATALOG may appear)
+        our_servers = [s for s in server_names if s in ("fetch", "memory")]
+        assert our_servers == sorted(our_servers)
+
+    def test_get_meta_tools_llm_selection(self, populated_dynamic_mcp):
+        """LLM selection mode should return airis-exec + utility tools only."""
+        tools = populated_dynamic_mcp.get_meta_tools_llm_selection()
+
+        tool_names = {t["name"] for t in tools}
+        assert "airis-exec" in tool_names
+        assert "airis-confidence" in tool_names
+        assert "airis-repo-index" in tool_names
+
+        # Should NOT include find/schema/suggest/route
+        assert "airis-find" not in tool_names
+        assert "airis-schema" not in tool_names
+        assert "airis-suggest" not in tool_names
+        assert "airis-route" not in tool_names
+
+    def test_get_meta_tools_llm_selection_count(self, populated_dynamic_mcp):
+        """LLM selection mode should return exactly 3 tools."""
+        tools = populated_dynamic_mcp.get_meta_tools_llm_selection()
+        assert len(tools) == 3
+
+    def test_airis_exec_description_contains_tools(self, populated_dynamic_mcp):
+        """airis-exec description should list all available tools."""
+        tools = populated_dynamic_mcp.get_meta_tools_llm_selection()
+        exec_tool = next(t for t in tools if t["name"] == "airis-exec")
+
+        desc = exec_tool["description"]
+        assert "create_entities" in desc
+        assert "search_entities" in desc
+        assert "fetch_url" in desc
+        assert "memory:" in desc
+        assert "fetch:" in desc
+
+    def test_airis_exec_description_updates_dynamically(self):
+        """Description should update when tools are added to cache."""
+        mcp = DynamicMCP()
+
+        # Initially has catalog tools only
+        tools_before = mcp.get_meta_tools_llm_selection()
+        exec_before = next(t for t in tools_before if t["name"] == "airis-exec")
+
+        # Add a new tool
+        mcp._tools["my_new_tool"] = ToolInfo(
+            name="my_new_tool", server="custom-server",
+            description="A custom tool", input_schema={}, source="process"
+        )
+        mcp._tool_to_server["my_new_tool"] = "custom-server"
+
+        tools_after = mcp.get_meta_tools_llm_selection()
+        exec_after = next(t for t in tools_after if t["name"] == "airis-exec")
+
+        assert "my_new_tool" in exec_after["description"]
+        assert "custom-server:" in exec_after["description"]
+
+    def test_token_savings_vs_standard_dynamic(self):
+        """LLM selection should use fewer tools than standard dynamic mode."""
+        mcp = DynamicMCP()
+
+        # Add some tools
+        for i in range(10):
+            mcp._tools[f"tool_{i}"] = ToolInfo(
+                name=f"tool_{i}", server="test-server",
+                description=f"Test tool {i}", input_schema={}, source="process"
+            )
+            mcp._tool_to_server[f"tool_{i}"] = "test-server"
+
+        standard_count = len(mcp.get_meta_tools())  # 7
+        llm_selection_count = len(mcp.get_meta_tools_llm_selection())  # 3
+
+        assert llm_selection_count < standard_count
+
+    @pytest.mark.asyncio
+    async def test_apply_schema_partitioning_llm_selection_mode(self):
+        """apply_schema_partitioning should use LLM selection tools when enabled."""
+        from unittest.mock import patch, MagicMock, AsyncMock
+
+        from app.api.endpoints.mcp_proxy import apply_schema_partitioning
+
+        mock_settings = MagicMock()
+        mock_settings.DYNAMIC_MCP = True
+        mock_settings.LLM_TOOL_SELECTION = True
+
+        mock_pm = MagicMock()
+        mock_pm.get_hot_servers = MagicMock(return_value=[])
+
+        mock_dynamic_mcp = MagicMock()
+        mock_dynamic_mcp.get_meta_tools_llm_selection.return_value = [
+            {"name": "airis-exec", "description": "Execute tool. Tools: ...", "inputSchema": {"type": "object"}},
+            {"name": "airis-confidence", "description": "Confidence check", "inputSchema": {"type": "object"}},
+            {"name": "airis-repo-index", "description": "Repo index", "inputSchema": {"type": "object"}},
+        ]
+
+        data = {
+            "result": {
+                "tools": [
+                    {"name": "docker_tool_1", "description": "Docker tool", "inputSchema": {}},
+                ]
+            }
+        }
+
+        with patch("app.api.endpoints.mcp_proxy.settings", mock_settings), \
+             patch("app.api.endpoints.mcp_proxy.get_process_manager", return_value=mock_pm), \
+             patch("app.api.endpoints.mcp_proxy.get_dynamic_mcp", return_value=mock_dynamic_mcp):
+
+            result = await apply_schema_partitioning(data)
+
+        tools = result["result"]["tools"]
+        tool_names = {t["name"] for t in tools}
+
+        # Should have LLM selection tools (3), NOT standard meta-tools (7)
+        assert "airis-exec" in tool_names
+        assert "airis-confidence" in tool_names
+        assert "airis-repo-index" in tool_names
+
+        # Should NOT have find/schema/suggest/route
+        assert "airis-find" not in tool_names
+        assert "airis-schema" not in tool_names
+
+        # get_meta_tools_llm_selection should have been called, not get_meta_tools
+        mock_dynamic_mcp.get_meta_tools_llm_selection.assert_called_once()
+        mock_dynamic_mcp.get_meta_tools.assert_not_called()
+
+
 class TestApplySchemaPartitioningDynamicMode:
     """Tests for apply_schema_partitioning in Dynamic MCP mode.
 
@@ -707,9 +857,10 @@ class TestApplySchemaPartitioningDynamicMode:
         # Import the function under test
         from app.api.endpoints.mcp_proxy import apply_schema_partitioning
 
-        # Mock settings.DYNAMIC_MCP = True
+        # Mock settings.DYNAMIC_MCP = True, LLM_TOOL_SELECTION = False (standard dynamic)
         mock_settings = MagicMock()
         mock_settings.DYNAMIC_MCP = True
+        mock_settings.LLM_TOOL_SELECTION = False
 
         # Mock process manager
         mock_pm = MagicMock()

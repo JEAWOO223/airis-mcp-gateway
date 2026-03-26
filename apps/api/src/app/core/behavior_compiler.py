@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 # Priority sort order
 _PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
-# Base instructions (always included)
+# Base instructions (always included) — standard 3-step mode
 _BASE_INSTRUCTIONS = (
     "This is AIRIS MCP Gateway with Dynamic MCP. "
     "IMPORTANT: Do NOT call tools directly. Instead:\n"
@@ -31,6 +31,16 @@ _BASE_INSTRUCTIONS = (
     "This provides 98% token reduction while maintaining full functionality."
 )
 
+# Base instructions for LLM Tool Selection mode — single-tool mode
+_BASE_INSTRUCTIONS_LLM_SELECTION = (
+    "This is AIRIS MCP Gateway with LLM Tool Selection. "
+    "All tools are listed in the airis-exec description. "
+    "Pick a tool by name and call airis-exec directly:\n"
+    "  airis-exec tool=\"server:tool_name\" arguments={...}\n"
+    "If you're unsure about arguments, call airis-exec with just the tool name "
+    "and no arguments — it will return the schema."
+)
+
 _META_TOOLS_SECTION = (
     "## Additional Meta-Tools\n"
     "- 'airis-confidence': Pre-implementation confidence check. Use before starting complex tasks.\n"
@@ -38,6 +48,12 @@ _META_TOOLS_SECTION = (
     "- 'airis-suggest': Get tool recommendations from natural language intent.\n\n"
     "When you need a capability (web search, memory, code analysis, etc.), "
     "ALWAYS start with airis-find or airis-suggest to discover available tools."
+)
+
+_META_TOOLS_SECTION_LLM_SELECTION = (
+    "## Additional Meta-Tools\n"
+    "- 'airis-confidence': Pre-implementation confidence check. Use before starting complex tasks.\n"
+    "- 'airis-repo-index': Generate repository structure overview for unfamiliar codebases."
 )
 
 _TOOL_ROUTING_GUIDE = (
@@ -63,7 +79,12 @@ def compile_instructions(server_configs: dict[str, McpServerConfig]) -> str:
     Returns:
         Compiled instructions string for MCP initialize response
     """
-    sections = [_BASE_INSTRUCTIONS, _META_TOOLS_SECTION, _TOOL_ROUTING_GUIDE]
+    from .config import settings
+
+    if settings.LLM_TOOL_SELECTION:
+        sections = [_BASE_INSTRUCTIONS_LLM_SELECTION, _META_TOOLS_SECTION_LLM_SELECTION, _TOOL_ROUTING_GUIDE]
+    else:
+        sections = [_BASE_INSTRUCTIONS, _META_TOOLS_SECTION, _TOOL_ROUTING_GUIDE]
 
     # Collect behaviors from all servers (including disabled — they can be auto-enabled)
     behavior_lines = _compile_behavior_lines(server_configs)

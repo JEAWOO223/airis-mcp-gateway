@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     # instead of all available tools. This dramatically reduces context usage.
     DYNAMIC_MCP: bool = os.getenv("DYNAMIC_MCP", "true").lower() in ("true", "1", "yes")
 
+    # LLM Tool Selection Mode
+    # When enabled (with DYNAMIC_MCP=true), exposes a single airis-exec tool
+    # with all tool names listed in the description. The LLM picks tools by name
+    # and calls airis-exec directly — no find/schema steps needed.
+    # If arguments are missing/wrong, airis-exec returns the schema as guidance.
+    LLM_TOOL_SELECTION: bool = os.getenv("LLM_TOOL_SELECTION", "false").lower() in ("true", "1", "yes")
+
     # Tool Call Timeout (seconds)
     # Fail-safe timeout for MCP tool calls to prevent Claude Code from hanging indefinitely.
     # Applies to ProcessManager tool calls and Docker Gateway proxy requests.

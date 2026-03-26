@@ -131,6 +131,45 @@ airis-exec tool="stripe:create_customer" arguments={...}
 
 **Token savings:** ~98% reduction (42k → 600 tokens)
 
+### LLM Tool Selection Mode
+
+When `LLM_TOOL_SELECTION=true` (requires `DYNAMIC_MCP=true`), simplifies to a **single tool**:
+
+| Tool | Purpose |
+|------|---------|
+| `airis-exec` | Execute any tool (description lists all tool names by server) |
+| `airis-confidence` | Pre-implementation confidence check |
+| `airis-repo-index` | Generate repository structure overview |
+
+The `airis-exec` description is dynamically generated with all tool names grouped by server:
+```
+memory: create_entities, search_entities, delete_entities
+fetch: fetch_url, fetch_html
+tavily: search, extract
+stripe: create_customer, create_payment_intent
+```
+
+**Flow:** LLM reads tool names from description → calls `airis-exec` directly.
+If arguments are missing, `airis-exec` returns the schema as guidance.
+
+```
+airis-exec tool="stripe:create_customer"
+→ Returns schema (no arguments provided)
+
+airis-exec tool="stripe:create_customer" arguments={"name": "Acme"}
+→ Executes!
+```
+
+| | Standard Dynamic (7 tools) | LLM Selection (1+2 tools) |
+|---|---|---|
+| Tool definitions | ~1,400 tokens | ~400-500 tokens |
+| Per action | find→schema→exec (3 calls) | exec (1 call) |
+| LLM tool choice | Pick from 7 | Pick from 1 (no ambiguity) |
+
+```bash
+LLM_TOOL_SELECTION=true DYNAMIC_MCP=true docker compose up -d
+```
+
 To disable and expose all tools directly:
 ```bash
 DYNAMIC_MCP=false docker compose up -d
@@ -225,7 +264,8 @@ task autostart:status     # Verify installation
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `DYNAMIC_MCP` | `true` | Enable Dynamic MCP (3 meta-tools only) |
+| `DYNAMIC_MCP` | `true` | Enable Dynamic MCP (7 meta-tools only) |
+| `LLM_TOOL_SELECTION` | `false` | Single airis-exec with tool names in description (requires DYNAMIC_MCP) |
 | `TOOL_CALL_TIMEOUT` | `90` | Fail-safe timeout (seconds) for MCP tool calls |
 | `AIRIS_API_KEY` | *(none)* | API key for bearer auth (disabled if not set) |
 | `MCP_GATEWAY_URL` | `http://gateway:9390` | Docker gateway URL |

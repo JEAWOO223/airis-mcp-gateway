@@ -498,6 +498,46 @@ class DynamicMCP:
             return text
         return text[:max_length - 1] + "…"
 
+    def generate_tool_listing(self) -> str:
+        """
+        Generate a compact tool listing grouped by server for LLM tool selection.
+
+        Returns a string like:
+            memory: create_entities, search_entities, delete_entities
+            fetch: fetch_url, fetch_html
+            tavily: search, extract
+        """
+        # Group tools by server
+        server_tools: dict[str, list[str]] = {}
+        for tool_name, info in self._tools.items():
+            server = info.server
+            if server not in server_tools:
+                server_tools[server] = []
+            server_tools[server].append(tool_name)
+
+        # Also include tools from TOOL_CATALOG for disabled/unloaded servers
+        try:
+            from .tool_suggester import TOOL_CATALOG
+            for server_name, tools in TOOL_CATALOG.items():
+                if server_name not in server_tools:
+                    server_tools[server_name] = list(tools.keys())
+                else:
+                    # Add catalog tools not already in cache
+                    existing = set(server_tools[server_name])
+                    for tool_name in tools:
+                        if tool_name not in existing:
+                            server_tools[server_name].append(tool_name)
+        except ImportError:
+            pass
+
+        # Sort servers alphabetically, tools alphabetically within each server
+        lines = []
+        for server in sorted(server_tools.keys()):
+            tools = sorted(server_tools[server])
+            lines.append(f"{server}: {', '.join(tools)}")
+
+        return "\n".join(lines)
+
     def get_meta_tools(self) -> list[dict]:
         """
         Get the meta-tools for Dynamic MCP mode.
@@ -666,6 +706,121 @@ class DynamicMCP:
                         }
                     },
                     "required": ["task"]
+                }
+            }
+        ]
+
+    def get_meta_tools_llm_selection(self) -> list[dict]:
+        """
+        Get meta-tools for LLM Tool Selection mode.
+
+        Returns only airis-exec (with tool listing in description) plus
+        utility tools (airis-confidence, airis-repo-index).
+        The LLM picks tools by name from the description and calls airis-exec.
+        If arguments are wrong, airis-exec returns the schema as guidance.
+        """
+        tool_listing = self.generate_tool_listing()
+
+        description = (
+            "Execute any MCP tool. Call with tool name and arguments. "
+            "If arguments are missing or wrong, returns the tool's schema.\n\n"
+            "Available tools:\n"
+            f"{tool_listing}"
+        )
+
+        return [
+            {
+                "name": "airis-exec",
+                "description": description,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "tool": {
+                            "type": "string",
+                            "description": "Tool name: 'tool_name' or 'server:tool_name'"
+                        },
+                        "arguments": {
+                            "type": "object",
+                            "description": "Arguments to pass to the tool"
+                        }
+                    },
+                    "required": ["tool"]
+                }
+            },
+            {
+                "name": "airis-confidence",
+                "description": "Pre-implementation confidence check. Assess confidence level before starting implementation to prevent wrong-direction execution. Returns score (0-1), verdict (proceed/present_alternatives/ask_user/stop), and clarifying questions if needed.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "Description of the implementation task"
+                        },
+                        "has_official_docs": {
+                            "type": "boolean",
+                            "description": "Official documentation has been reviewed (+0.2)"
+                        },
+                        "has_existing_patterns": {
+                            "type": "boolean",
+                            "description": "Existing codebase patterns identified (+0.2)"
+                        },
+                        "has_clear_path": {
+                            "type": "boolean",
+                            "description": "Clear implementation path exists (+0.2)"
+                        },
+                        "multiple_approaches": {
+                            "type": "boolean",
+                            "description": "Multiple viable approaches exist (-0.1)"
+                        },
+                        "has_trade_offs": {
+                            "type": "boolean",
+                            "description": "Trade-offs require consideration (-0.1)"
+                        },
+                        "unclear_requirements": {
+                            "type": "boolean",
+                            "description": "Requirements are vague or incomplete (-0.2)"
+                        },
+                        "no_precedent": {
+                            "type": "boolean",
+                            "description": "No similar implementations to reference (-0.2)"
+                        },
+                        "missing_domain_knowledge": {
+                            "type": "boolean",
+                            "description": "Domain expertise is lacking (-0.2)"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "airis-repo-index",
+                "description": "Generate a repository index with structure overview, entry points, documentation, and configuration files. Useful for understanding unfamiliar codebases.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_path": {
+                            "type": "string",
+                            "description": "Path to the repository to index (absolute or relative)"
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["full", "update", "quick"],
+                            "description": "Indexing mode: 'full' (deep, 6 levels), 'update' (medium, 4 levels), 'quick' (shallow, 2 levels)"
+                        },
+                        "include_docs": {
+                            "type": "boolean",
+                            "description": "Include documentation files (default: true)"
+                        },
+                        "include_tests": {
+                            "type": "boolean",
+                            "description": "Include test directories (default: true)"
+                        },
+                        "max_entries": {
+                            "type": "integer",
+                            "description": "Maximum top-level entries to include (default: 10)"
+                        }
+                    },
+                    "required": ["repo_path"]
                 }
             }
         ]

@@ -585,7 +585,12 @@ async def apply_schema_partitioning(data: Dict[str, Any]) -> Dict[str, Any]:
     # COLD servers are still accessed via airis-find → airis-exec
     if settings.DYNAMIC_MCP:
         dynamic_mcp = get_dynamic_mcp()
-        tools = list(dynamic_mcp.get_meta_tools())
+
+        # LLM Tool Selection: single airis-exec with tool names in description
+        if settings.LLM_TOOL_SELECTION:
+            tools = list(dynamic_mcp.get_meta_tools_llm_selection())
+        else:
+            tools = list(dynamic_mcp.get_meta_tools())
         meta_count = len(tools)
 
         # HOT servers: expose full schema directly (skip internal management servers)
@@ -1512,6 +1517,45 @@ async def handle_airis_find(rpc_request: Dict[str, Any], session_id: Optional[st
     )
 
 
+async def _get_tool_schema_for_help(
+    dynamic_mcp, process_manager, server_name: str, tool_name: str, tool_ref: str
+) -> Optional[str]:
+    """
+    Get tool schema formatted as help text for LLM Tool Selection mode.
+
+    When the LLM calls airis-exec without arguments, this returns the tool's
+    schema so the LLM can retry with correct arguments.
+
+    Returns:
+        Formatted schema string, or None if schema not available
+    """
+    # Try cache first
+    schema = dynamic_mcp.get_tool_schema(tool_name)
+
+    # If not in cache (e.g., cold server), try loading
+    if not schema and server_name:
+        await dynamic_mcp.load_tools_for_server(server_name, process_manager, force_enable=True)
+        schema = dynamic_mcp.get_tool_schema(tool_name)
+
+    if not schema:
+        return f"Tool '{tool_ref}' found on server '{server_name}' but schema not available. Try calling with arguments directly."
+
+    lines = [f"## {tool_ref}"]
+    if schema.get("description"):
+        lines.append(schema["description"])
+    lines.append("")
+
+    input_schema = schema.get("inputSchema", {})
+    if input_schema:
+        lines.append("### Arguments")
+        lines.append(f"```json\n{json.dumps(input_schema, indent=2)}\n```")
+
+    lines.append("")
+    lines.append(f"Call again with: airis-exec tool=\"{tool_ref}\" arguments={{...}}")
+
+    return "\n".join(lines)
+
+
 async def handle_airis_exec(rpc_request: Dict[str, Any], session_id: Optional[str] = None) -> Response:
     """
     airis-exec ツールコール: 任意のツールを実行
@@ -1566,6 +1610,33 @@ async def handle_airis_exec(rpc_request: Dict[str, Any], session_id: Optional[st
             status_code=200,
             media_type="application/json"
         )
+
+    # LLM Tool Selection: return schema when arguments are missing
+    # This lets the LLM call airis-exec without knowing the schema upfront,
+    # and get the schema back as guidance on retry.
+    if settings.LLM_TOOL_SELECTION and not tool_args:
+        schema_info = await _get_tool_schema_for_help(
+            dynamic_mcp, process_manager, server_name, tool_name, tool_ref
+        )
+        if schema_info:
+            response_data = {
+                "jsonrpc": "2.0",
+                "id": rpc_request.get("id"),
+                "result": {
+                    "content": [{"type": "text", "text": schema_info}],
+                    "isError": False
+                }
+            }
+            if session_id:
+                queue = await get_response_queue(session_id)
+                await queue.put(response_data)
+                return Response(status_code=202)
+            return Response(
+                content=json.dumps(response_data),
+                status_code=200,
+                media_type="application/json"
+            )
+
     if process_manager.is_process_server(server_name):
         config = process_manager._server_configs.get(server_name)
 
