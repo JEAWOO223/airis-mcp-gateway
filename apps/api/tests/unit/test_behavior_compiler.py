@@ -97,6 +97,8 @@ class TestCompileInstructions:
 
         assert _BASE_INSTRUCTIONS in result
         assert "## Proactive Tool Usage" not in result
+        assert "inspect the repo and check docs" in result
+        assert "browser testing" in result
 
 
 class TestCompileBehaviorLines:

@@ -26,6 +26,7 @@ _BASE_INSTRUCTIONS = (
     "IMPORTANT: Do NOT call tools directly. Instead:\n"
     "1. Use 'airis-exec' to execute any tool — all available tool names are listed in its description\n"
     "2. If arguments are wrong, the schema will be returned automatically\n"
+    "3. Before implementation, inspect the repo and check docs for unfamiliar libraries or APIs\n"
     "All 60+ tools are accessed through airis-exec. "
     "This provides 98% token reduction while maintaining full functionality."
 )
@@ -49,7 +50,8 @@ _TOOL_ROUTING_GUIDE = (
     "TDD/debugging/planning → superpowers plugin | "
     "git operations → gh CLI or native git | "
     "simple code read/edit → native Read/Edit/Grep tools\n\n"
-    "Rule: API/service → Gateway. Host-dependent → plugin/skill/CLI. Simple file ops → native tools."
+    "Rules: docs before code | API/service → Gateway | browser testing → Playwright CLI first | "
+    "host-dependent → plugin/skill/CLI | simple file ops → native tools."
 )
 
 

@@ -111,8 +111,8 @@ install() {
         delay=$((delay * 2 > 16 ? 16 : delay * 2))
     done
 
-    # Step 4: Install CLI + Register with Claude Code
-    log_step "4/4 Setting up CLI and Claude Code..."
+    # Step 4: Install CLI + Initialize client configuration
+    log_step "4/4 Setting up CLI and client configuration..."
 
     # Install airis-gateway CLI
     mkdir -p "$BIN_DIR"
@@ -122,6 +122,12 @@ install() {
     local path_ok=true
     if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
         path_ok=false
+    fi
+
+    # Initialize AIRIS registry and managed client config
+    local registry_initialized=false
+    if "$BIN_DIR/airis-gateway" init "$DIR" --apply >/dev/null 2>&1; then
+        registry_initialized=true
     fi
 
     # Register with Claude Code (if available)
@@ -189,12 +195,22 @@ install() {
     fi
     echo ""
 
+    if $registry_initialized; then
+        echo -e "  AIRIS Registry: ${GREEN}Initialized${NC}"
+        echo "    Path: ~/.airis/mcp/registry.json"
+    else
+        echo "  Initialize AIRIS registry:"
+        echo "    airis-gateway init"
+    fi
+    echo ""
+
     if $claude_registered; then
         echo -e "  Claude Code: ${GREEN}Registered (global)${NC}"
     else
         echo "  Register with Claude Code:"
         echo "    claude mcp add --scope user --transport sse airis-mcp-gateway http://localhost:9400/sse"
     fi
+    echo "  Claude Desktop: unmanaged (AIRIS does not modify its MCP config automatically)"
     echo ""
 
     if $workspace_installed; then
@@ -203,10 +219,14 @@ install() {
 
     # Next steps
     echo -e "  ${BOLD}Next steps:${NC}"
-    echo "    1. Open Claude Code — 60+ tools are ready"
-    echo "    2. Install superpowers plugin for TDD/debugging/planning:"
+    echo "    1. Import and remove any repo-local mcp.json files:"
+    echo "       airis-gateway import ~/github --apply"
+    echo "       airis-gateway clean ~/github"
+    echo "       airis-gateway doctor ~/github"
+    echo "    2. Open Codex or Claude Code"
+    echo "    3. Install superpowers plugin for TDD/debugging/planning:"
     echo "       /plugin install superpowers"
-    echo "    3. Install playwright-cli for browser automation:"
+    echo "    4. Install playwright-cli for browser automation:"
     echo "       playwright-cli install --skills"
     echo ""
     echo "  Commands:"
@@ -215,6 +235,8 @@ install() {
     echo "    airis-gateway logs -f  # View logs"
     echo "    airis-gateway status   # Check status"
     echo "    airis-gateway servers  # List MCP servers"
+    echo "    airis-gateway init     # Initialize global registry"
+    echo "    airis-gateway doctor   # Detect repo-local mcp.json drift"
     echo ""
     echo "  Uninstall:"
     echo "    airis-gateway --uninstall"
