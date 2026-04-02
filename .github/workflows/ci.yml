@@ -17,6 +17,7 @@ jobs:
     outputs:
       python: ${{ steps.filter.outputs.python }}
       typescript: ${{ steps.filter.outputs.typescript }}
+      shell: ${{ steps.filter.outputs.shell }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -29,6 +30,13 @@ jobs:
             typescript:
               - 'apps/gateway-control/**'
               - 'apps/airis-commands/**'
+            shell:
+              - 'scripts/airis-gateway'
+              - 'scripts/quick-install.sh'
+              - 'scripts/test-airis-gateway-smoke.sh'
+              - 'install.sh'
+              - '.tasks.d/test.yml'
+              - '.github/workflows/ci.yml'
 
   # Python tests (only when Python files change)
   test-python:
@@ -104,9 +112,19 @@ jobs:
           cd apps/${{ matrix.package }}
           npm run build
 
+  test-shell:
+    needs: changes
+    if: needs.changes.outputs.shell == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run airis-gateway smoke tests
+        run: bash scripts/test-airis-gateway-smoke.sh
+
   # Auto-merge next to main
   merge-to-main:
-    needs: [test-python, build-typescript]
+    needs: [test-python, build-typescript, test-shell]
     if: |
       always() &&
       github.ref == 'refs/heads/stg' &&

@@ -1,12 +1,5 @@
 """
-Dynamic MCP - Token-efficient tool discovery and execution.
-
-Instead of exposing all tools in tools/list (which bloats context),
-Dynamic MCP exposes only two meta-tools:
-- airis-find: Search for tools/servers
-- airis-exec: Execute any tool by name
-
-This reduces context usage from O(n*tools) to O(1).
+Dynamic MCP - Token-efficient tool discovery and activation.
 """
 
 import json
@@ -15,6 +8,7 @@ from typing import Any, Optional
 from dataclasses import dataclass, field
 
 from .logging import get_logger
+from .toolset_catalog import ToolsetInfo, build_toolset_index
 
 logger = get_logger(__name__)
 
@@ -58,6 +52,10 @@ class DynamicMCP:
         self._tools: dict[str, ToolInfo] = {}  # tool_name -> ToolInfo
         self._servers: dict[str, ServerInfo] = {}  # server_name -> ServerInfo
         self._tool_to_server: dict[str, str] = {}  # tool_name -> server_name
+        self._toolsets: dict[str, ToolsetInfo] = {}  # toolset_ref -> ToolsetInfo
+        self._tool_to_toolsets: dict[str, set[str]] = {}  # tool_name -> toolset refs
+        self._active_toolsets: set[str] = set()
+        self._active_tools: set[str] = set()
 
     async def refresh_cache(
         self,
@@ -143,6 +141,7 @@ class DynamicMCP:
         self._tools = new_tools
         self._servers = new_servers
         self._tool_to_server = new_tool_to_server
+        self.refresh_toolsets(process_manager)
 
         logger.info(f"Cached {len(self._tools)} tools from {len(self._servers)} servers")
 
@@ -248,8 +247,17 @@ class DynamicMCP:
         self._tools = new_tools
         self._servers = new_servers
         self._tool_to_server = new_tool_to_server
+        self.refresh_toolsets(process_manager)
 
         logger.info(f"Cached {len(self._tools)} tools ({index_count} from index) from {len(self._servers)} servers (COLD tools on-demand)")
+
+    def refresh_toolsets(self, process_manager) -> None:
+        """Refresh logical toolset catalog from server configs."""
+        self._toolsets = build_toolset_index(process_manager._server_configs)
+        self._tool_to_toolsets = {}
+        for ref, info in self._toolsets.items():
+            for tool_name in info.tools:
+                self._tool_to_toolsets.setdefault(tool_name, set()).add(ref)
 
     def build_tool_listing(
         self,
@@ -411,6 +419,7 @@ class DynamicMCP:
         """
         matched_tools = []
         matched_servers = []
+        matched_toolsets = []
 
         query_lower = query.lower() if query else None
 
@@ -440,6 +449,21 @@ class DynamicMCP:
                 "enabled": info.enabled,
                 "mode": info.mode,
                 "tools_count": info.tools_count,
+            })
+
+        # Search toolsets
+        for ref, info in self._toolsets.items():
+            if server and info.server != server:
+                continue
+            if query_variants:
+                haystacks = (ref.lower(), info.summary.lower(), info.server.lower(), info.name.lower())
+                if not any(any(v in hay for hay in haystacks) for v in query_variants):
+                    continue
+            matched_toolsets.append({
+                "ref": ref,
+                "server": info.server,
+                "summary": info.summary,
+                "tools_count": len(info.tools),
             })
 
         # Search tools
@@ -490,6 +514,7 @@ class DynamicMCP:
 
         return {
             "servers": matched_servers[:limit],
+            "toolsets": matched_toolsets[:limit],
             "tools": matched_tools,
             "total_servers": len(self._servers),
             "total_tools": len(self._tools),
@@ -554,38 +579,97 @@ class DynamicMCP:
             return text
         return text[:max_length - 1] + "…"
 
-    def get_meta_tools(self, tool_listing: str = "", mode: str = "core") -> list[dict]:
+    async def activate_toolset(self, toolset_ref: str, process_manager) -> dict[str, Any]:
+        """Activate a toolset and load its live tool definitions when possible."""
+        if not self._toolsets:
+            self.refresh_toolsets(process_manager)
+
+        selected: list[ToolsetInfo] = []
+        if toolset_ref in self._toolsets:
+            selected = [self._toolsets[toolset_ref]]
+        else:
+            by_server = [info for info in self._toolsets.values() if info.server == toolset_ref]
+            if by_server:
+                selected = by_server
+
+        if not selected:
+            return {"ok": False, "message": f"Unknown toolset: {toolset_ref}"}
+
+        activated_tools: list[str] = []
+        activated_toolsets: list[str] = []
+        activated_servers: list[str] = []
+
+        for toolset in selected:
+            config = process_manager._server_configs.get(toolset.server)
+            if config and not config.enabled:
+                await process_manager.enable_server(toolset.server)
+                activated_servers.append(toolset.server)
+
+            if process_manager.is_process_server(toolset.server):
+                await self.load_tools_for_server(toolset.server, process_manager, force_enable=True)
+
+            self._active_toolsets.add(toolset.ref)
+            activated_toolsets.append(toolset.ref)
+            for tool_name in toolset.tools:
+                self._active_tools.add(tool_name)
+                activated_tools.append(tool_name)
+
+        return {
+            "ok": True,
+            "toolsets": activated_toolsets,
+            "tools": sorted(set(activated_tools)),
+            "servers": sorted(set(activated_servers)),
+        }
+
+    def get_active_tool_definitions(
+        self,
+        excluded_servers: set[str] | None = None,
+        excluded_tool_names: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return tool definitions for activated native tools."""
+        excluded_servers = excluded_servers or set()
+        excluded_tool_names = excluded_tool_names or set()
+        definitions: list[dict[str, Any]] = []
+
+        for tool_name in sorted(self._active_tools):
+            if tool_name in excluded_tool_names:
+                continue
+            info = self._tools.get(tool_name)
+            if not info or info.server in excluded_servers:
+                continue
+            definitions.append({
+                "name": info.name,
+                "description": info.description or f"{info.server}:{info.name}",
+                "inputSchema": info.input_schema or {"type": "object", "properties": {}},
+            })
+        return definitions
+
+    def get_meta_tools(self, mode: str = "core") -> list[dict]:
         """
         Get the meta-tools for Dynamic MCP mode.
-
-        Args:
-            tool_listing: Compact tool listing to embed in airis-exec description.
-                If provided, airis-exec becomes self-sufficient (no find/schema needed).
-            mode: "core" (3 tools: find/exec/schema) or "full" (all 7 including
-                confidence, repo-index, suggest, route).
 
         Returns:
             List of tool definitions.
         """
-        # Build airis-exec description dynamically
-        if tool_listing:
-            exec_desc = (
-                "Execute any MCP tool by name. "
-                "Call with tool='server:tool_name' and arguments={...}. "
-                "If arguments are wrong, the tool schema will be returned.\n\n"
-                "Available tools:\n" + tool_listing
-            )
-        else:
-            exec_desc = (
-                "Execute any MCP tool by name. "
-                "Use airis-find to discover available tools."
-            )
-
         # Core meta-tools (always included)
         tools = [
             {
+                "name": "airis-activate",
+                "description": "Activate a toolset so its native MCP tools become directly callable. Prefer this before using large cold providers.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "toolset": {
+                            "type": "string",
+                            "description": "Toolset ref like 'stripe.customers' or server name like 'stripe' to activate all of its toolsets"
+                        }
+                    },
+                    "required": ["toolset"]
+                }
+            },
+            {
                 "name": "airis-find",
-                "description": "Search for available MCP tools and servers by keyword. Use when the tool you need is not listed in airis-exec.",
+                "description": "Optional fallback search across available MCP servers, toolsets, and tools. Use when the right capability slice is unclear.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -602,7 +686,7 @@ class DynamicMCP:
             },
             {
                 "name": "airis-exec",
-                "description": exec_desc,
+                "description": "Deprecated compatibility wrapper for executing a tool by name. Prefer activating a toolset and calling the native MCP tool directly.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -620,7 +704,7 @@ class DynamicMCP:
             },
             {
                 "name": "airis-schema",
-                "description": "Get the full input schema for a specific tool. Use when you need to check required arguments before calling airis-exec.",
+                "description": "Get the full input schema for a specific native MCP tool. Use when you need to check required arguments before calling it directly.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
