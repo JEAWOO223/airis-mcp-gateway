@@ -29,10 +29,12 @@ Register the gateway once, and access all backend MCP servers (Stripe, Supabase,
 | Client | Connection Command / Setup |
 | :--- | :--- |
 | **Codex** | `codex mcp add airis-mcp-gateway --url http://localhost:9400/mcp` |
-| **Claude Code** | `claude mcp add airis http://localhost:8000/sse` |
-| **Gemini CLI** | `gemini mcp add --transport sse airis http://localhost:8000/sse` |
-| **Cursor** | Settings > Features > MCP > **Add New MCP Server**<br>Name: `airis`, Type: `SSE`, URL: `http://localhost:8000/sse` |
-| **Windsurf** | Add SSE URL `http://localhost:8000/sse` to `~/.codeium/config.json` |
+| **Claude Code** | `claude mcp add airis-mcp-gateway http://localhost:9400/sse` |
+| **Gemini CLI** | `gemini mcp add --transport sse airis-mcp-gateway http://localhost:9400/sse` |
+| **Cursor** | Settings > Features > MCP > **Add New MCP Server**<br>Name: `airis-mcp-gateway`, Type: `SSE`, URL: `http://localhost:9400/sse` |
+| **Windsurf** | Add SSE URL `http://localhost:9400/sse` to `~/.codeium/config.json` |
+
+Docker Compose publishes the API on port `9400`. Codex uses Streamable HTTP at `http://localhost:9400/mcp`, and SSE clients such as Claude Code and Gemini CLI should use `http://localhost:9400/sse`.
 
 ---
 
@@ -45,10 +47,38 @@ Stop guessing if your toolset is actually helping. Airis tracks and visualizes r
 - **Latency & Reliability**: Real-time monitoring of each MCP server's health, latency, and success rates.
 
 ### 2. Intelligent Noise Reduction
-Even with large context windows, exposing 100+ tools simultaneously leads to "tool selection hallucinations." Airis provides **`airis-find`** to dynamically help models discover only the tools they need, reducing inference noise and improving reasoning accuracy.
+Even with large context windows, exposing 100+ tools simultaneously leads to "tool selection hallucinations." Airis keeps the initial capability surface small, activates toolsets on demand, and lets models call native tools directly once the right capability slice is exposed.
 
 ### 3. Single Source of Truth
-No more repeating API keys and server configs across different projects or AI tools. Manage all secrets in one place (`mcp-config.json`) and share them across Claude Code, Gemini CLI, Cursor, and more.
+No more repeating API keys and server configs across different projects or AI tools. Gateway server definitions live in one global registry, and the gateway runtime reads a single `mcp-config.json`.
+
+## Configuration Policy
+
+AIRIS uses a single global registry at `~/.airis/mcp/registry.json`.
+
+- Repository-local `mcp.json` files are not supported.
+- Existing `mcp.json` files should be imported into the global registry, backed up, and removed.
+- `airis-gateway init --apply` also deploys AIRIS best-practice assets to Codex, Claude Code, and Gemini.
+- Codex and Gemini can be managed automatically by AIRIS.
+- Claude Desktop is detected, but its MCP config is not modified automatically.
+
+Use:
+
+```bash
+airis-gateway init ~/github
+airis-gateway init ~/github --apply
+airis-gateway doctor ~/github
+```
+
+## AIRIS Best Practices
+
+AIRIS is not only a central MCP registry. It also distributes operating guidance for when to use MCP, CLI, skills, and hooks.
+
+- Check docs before implementing unfamiliar libraries or APIs.
+- Use MCP for shared external capabilities with structured I/O.
+- Prefer CLI for deterministic local workflows such as `git`, `gh`, `docker`, `pytest`, and Playwright.
+- Prefer Playwright CLI over Playwright MCP for normal browser testing because it is faster and more token-efficient.
+- Use skills and hooks for workflow guidance, guardrails, and repeatable team conventions.
 
 ## How It Works
 
@@ -125,6 +155,9 @@ All servers start on first tool call and auto-terminate when idle. Disabled serv
 ## Documentation
 
 - [Dynamic MCP deep-dive](./docs/dynamic-mcp.md) — Architecture, cache behavior, auto-enable flow
+- [Target architecture](./docs/target-architecture.md) — Toolset-centric AIRIS direction and design boundaries
+- [Toolset roadmap](./docs/toolset-roadmap.md) — Phased implementation plan for capability slices
+- [Capability selection guide](./docs/capability-selection.md) — When to use MCP vs skills vs hooks vs subagents vs CLI
 - [Configuration reference](./docs/configuration.md) — Environment variables, TTL settings, server config
 - [Gateway vs Plugins](./docs/gateway-vs-plugins.md) — When to use Gateway vs Claude Code plugins
 - [Deployment guide](./DEPLOYMENT.md) — Production setup, API auth, monitoring, reverse proxy

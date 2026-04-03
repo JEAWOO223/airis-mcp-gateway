@@ -1,6 +1,7 @@
 """Unit tests for dynamic_mcp.py"""
 import pytest
 from app.core.dynamic_mcp import DynamicMCP, ToolInfo, ServerInfo, get_dynamic_mcp
+from app.core.toolset_catalog import ToolsetInfo
 
 
 @pytest.fixture
@@ -64,6 +65,20 @@ def populated_dynamic_mcp():
     mcp._tool_to_server["create_entities"] = "memory"
     mcp._tool_to_server["search_entities"] = "memory"
     mcp._tool_to_server["fetch_url"] = "fetch"
+    mcp._toolsets["memory.graph"] = ToolsetInfo(
+        ref="memory.graph",
+        server="memory",
+        name="graph",
+        summary="Knowledge graph operations",
+        tools=["create_entities", "search_entities"],
+    )
+    mcp._toolsets["fetch.web"] = ToolsetInfo(
+        ref="fetch.web",
+        server="fetch",
+        name="web",
+        summary="Web fetch operations",
+        tools=["fetch_url"],
+    )
 
     return mcp
 
@@ -78,6 +93,7 @@ class TestDynamicMCPFind:
         assert results["total_servers"] == 3
         assert results["total_tools"] == 3
         assert len(results["tools"]) == 3
+        assert len(results["toolsets"]) == 2
 
     def test_find_by_query(self, populated_dynamic_mcp):
         """Test finding tools by query string"""
@@ -137,6 +153,7 @@ class TestDynamicMCPFind:
         assert results["total_servers"] == 0
         assert results["total_tools"] == 0
         assert len(results["tools"]) == 0
+        assert len(results["toolsets"]) == 0
 
 
 class TestDynamicMCPFindQueryVariants:
@@ -262,8 +279,9 @@ class TestDynamicMCPMetaTools:
         """Test getting core meta-tool definitions (default)"""
         tools = dynamic_mcp.get_meta_tools()
 
-        assert len(tools) == 3
+        assert len(tools) == 4
         tool_names = [t["name"] for t in tools]
+        assert "airis-activate" in tool_names
         assert "airis-find" in tool_names
         assert "airis-exec" in tool_names
         assert "airis-schema" in tool_names
@@ -272,8 +290,9 @@ class TestDynamicMCPMetaTools:
         """Test getting all meta-tool definitions"""
         tools = dynamic_mcp.get_meta_tools(mode="full")
 
-        assert len(tools) == 7
+        assert len(tools) == 8
         tool_names = [t["name"] for t in tools]
+        assert "airis-activate" in tool_names
         assert "airis-find" in tool_names
         assert "airis-exec" in tool_names
         assert "airis-schema" in tool_names
@@ -300,6 +319,15 @@ class TestDynamicMCPMetaTools:
         props = find_tool["inputSchema"]["properties"]
         assert "query" in props
         assert "server" in props
+
+    def test_airis_activate_schema(self, dynamic_mcp):
+        """Test airis-activate has correct schema"""
+        tools = dynamic_mcp.get_meta_tools()
+        activate_tool = next(t for t in tools if t["name"] == "airis-activate")
+
+        props = activate_tool["inputSchema"]["properties"]
+        assert "toolset" in props
+        assert "toolset" in activate_tool["inputSchema"].get("required", [])
 
     def test_airis_exec_schema(self, dynamic_mcp):
         """Test airis-exec has correct schema"""
@@ -382,12 +410,10 @@ class TestDynamicMCPTruncation:
 class TestDynamicMCPModeWithHotTools:
     """Tests for Dynamic MCP mode (meta-tools only).
 
-    In Dynamic MCP mode (DYNAMIC_MCP=true), the gateway returns ONLY:
-    - Meta-tools (airis-find, airis-exec, airis-schema)
+    In Dynamic MCP mode (DYNAMIC_MCP=true), the gateway returns control tools
+    plus any directly exposed HOT tools.
 
-    ALL other tools (both HOT and COLD) are accessed via airis-exec.
-    This follows the Lasso MCP Gateway pattern for maximum token efficiency.
-    Reference: https://github.com/lasso-security/mcp-gateway
+    COLD tools should appear only after activation.
     """
 
     @pytest.fixture
@@ -445,20 +471,20 @@ class TestDynamicMCPModeWithHotTools:
         return mcp
 
     def test_meta_tools_count_core(self, dynamic_mcp):
-        """Core mode should include 3 meta-tools."""
+        """Core mode should include 4 control tools."""
         meta_tools = dynamic_mcp.get_meta_tools()
 
-        assert len(meta_tools) == 3
+        assert len(meta_tools) == 4
         names = {t["name"] for t in meta_tools}
-        assert names == {"airis-find", "airis-exec", "airis-schema"}
+        assert names == {"airis-activate", "airis-find", "airis-exec", "airis-schema"}
 
     def test_meta_tools_count_full(self, dynamic_mcp):
-        """Full mode should include all 7 meta-tools."""
+        """Full mode should include all 8 control/meta tools."""
         meta_tools = dynamic_mcp.get_meta_tools(mode="full")
 
-        assert len(meta_tools) == 7
+        assert len(meta_tools) == 8
         names = {t["name"] for t in meta_tools}
-        assert names == {"airis-find", "airis-exec", "airis-schema", "airis-confidence", "airis-repo-index", "airis-suggest", "airis-route"}
+        assert names == {"airis-activate", "airis-find", "airis-exec", "airis-schema", "airis-confidence", "airis-repo-index", "airis-suggest", "airis-route"}
 
     def test_hot_server_tools_separate_from_cold(self, mcp_with_hot_and_cold):
         """HOT and COLD server tools should be properly categorized."""
@@ -480,23 +506,18 @@ class TestDynamicMCPModeWithHotTools:
         assert hot_tool_names.isdisjoint(cold_tool_names)
 
     def test_combined_tools_for_dynamic_mode(self, mcp_with_hot_and_cold):
-        """In Dynamic MCP mode, tools/list should return ONLY core meta-tools."""
+        """In Dynamic MCP mode, core tools are separate from inactive cold tools."""
         meta_tools = mcp_with_hot_and_cold.get_meta_tools()
 
-        # Dynamic MCP mode: ONLY core meta-tools (no HOT tools exposed directly)
         dynamic_tools = list(meta_tools)
 
-        # Expected: 3 core meta-tools ONLY
-        assert len(dynamic_tools) == 3
+        assert len(dynamic_tools) == 4
 
-        # Verify ONLY core meta-tools are present
         tool_names = {t["name"] for t in dynamic_tools}
-        assert tool_names == {"airis-find", "airis-exec", "airis-schema"}
+        assert tool_names == {"airis-activate", "airis-find", "airis-exec", "airis-schema"}
 
-        # Verify HOT tools are NOT directly exposed
         assert "gateway_list_servers" not in tool_names
 
-        # Verify COLD tools are NOT directly exposed
         assert "list_tables" not in tool_names
         assert "execute_sql" not in tool_names
 
@@ -534,9 +555,9 @@ class TestDynamicMCPModeWithHotTools:
         # Full mode: all tools
         all_tools_count = len(mcp._tools)  # 5 + 100 = 105 tools
 
-        # Dynamic mode: meta-tools ONLY (no HOT tools exposed directly)
+        # Dynamic mode: control tools only
         meta_tools = mcp.get_meta_tools()
-        dynamic_tools_count = len(meta_tools)  # 3 meta-tools (core mode)
+        dynamic_tools_count = len(meta_tools)  # 4 control tools (core mode)
 
         # Token estimate (300 tokens per tool schema)
         full_mode_tokens = all_tools_count * 300  # 31,500 tokens
@@ -545,7 +566,7 @@ class TestDynamicMCPModeWithHotTools:
         # Calculate savings
         savings_percent = (1 - dynamic_mode_tokens / full_mode_tokens) * 100
 
-        # Should have significant savings (> 90% with meta-tools only)
+        # Should still have significant savings (> 90% with control tools only)
         assert savings_percent > 90, \
             f"Expected >90% savings, got {savings_percent:.1f}%"
 
@@ -712,13 +733,13 @@ class TestRefreshCacheHotOnly:
 class TestApplySchemaPartitioningDynamicMode:
     """Tests for apply_schema_partitioning in Dynamic MCP mode.
 
-    Verifies that when DYNAMIC_MCP=true, only meta-tools are returned,
-    not HOT or COLD server tools.
+    Verifies that when DYNAMIC_MCP=true, control tools are returned,
+    and HOT tools can be returned directly.
     """
 
     @pytest.mark.asyncio
-    async def test_dynamic_mcp_returns_meta_tools_only(self):
-        """apply_schema_partitioning should return ONLY meta-tools in Dynamic MCP mode."""
+    async def test_dynamic_mcp_returns_control_and_hot_tools(self):
+        """apply_schema_partitioning should return control tools and HOT tools in Dynamic MCP mode."""
         from unittest.mock import patch, MagicMock, AsyncMock
 
         # Import the function under test
@@ -736,11 +757,13 @@ class TestApplySchemaPartitioningDynamicMode:
         mock_pm.list_tools = AsyncMock(return_value=[
             {"name": "hot_tool_1", "description": "HOT tool", "inputSchema": {}},
         ])
+        mock_pm._server_configs = {}
 
         # Mock dynamic_mcp
         mock_dynamic_mcp = MagicMock()
-        mock_dynamic_mcp.build_tool_listing.return_value = "[test-server] test_tool_1, test_tool_2"
+        mock_dynamic_mcp.get_active_tool_definitions.return_value = []
         mock_dynamic_mcp.get_meta_tools.return_value = [
+            {"name": "airis-activate", "description": "Activate toolset", "inputSchema": {"type": "object"}},
             {"name": "airis-find", "description": "Find tools", "inputSchema": {"type": "object"}},
             {"name": "airis-exec", "description": "Execute tool", "inputSchema": {"type": "object"}},
             {"name": "airis-schema", "description": "Get schema", "inputSchema": {"type": "object"}},
@@ -765,12 +788,12 @@ class TestApplySchemaPartitioningDynamicMode:
 
             result = await apply_schema_partitioning(data)
 
-        # Should return meta-tools (7) + HOT tools (1)
+        # Should return control/meta-tools (8) + HOT tools (1)
         tools = result["result"]["tools"]
-        assert len(tools) == 8
+        assert len(tools) == 9
 
         tool_names = {t["name"] for t in tools}
-        assert {"airis-find", "airis-exec", "airis-schema",
+        assert {"airis-activate", "airis-find", "airis-exec", "airis-schema",
                 "airis-confidence", "airis-repo-index", "airis-suggest", "airis-route"}.issubset(tool_names)
 
         # HOT tools are included alongside meta-tools
@@ -941,21 +964,126 @@ class TestBuildToolListing:
         result = dmc.build_tool_listing(compact=True, compact_limit=3)
         assert "+" not in result
 
-    def test_get_meta_tools_with_listing(self):
-        """get_meta_tools should embed tool listing in airis-exec description."""
-        dmc = self._make_dynamic_mcp({
-            "search": ("tavily", "Search"),
-        })
-        listing = dmc.build_tool_listing()
-        tools = dmc.get_meta_tools(tool_listing=listing)
-        exec_tool = next(t for t in tools if t["name"] == "airis-exec")
-        assert "Available tools:" in exec_tool["description"]
-        assert "[tavily] search" in exec_tool["description"]
-
-    def test_get_meta_tools_without_listing(self):
-        """get_meta_tools without listing should have fallback description."""
+    def test_get_meta_tools_exec_description_is_deprecated(self):
+        """airis-exec should be marked as deprecated compatibility."""
         dmc = self._make_dynamic_mcp()
         tools = dmc.get_meta_tools()
         exec_tool = next(t for t in tools if t["name"] == "airis-exec")
-        assert "Available tools:" not in exec_tool["description"]
-        assert "airis-find" in exec_tool["description"]
+        assert "Deprecated compatibility wrapper" in exec_tool["description"]
+
+
+class TestDynamicMCPActivation:
+    """Tests for toolset activation and active tool exposure."""
+
+    @pytest.mark.asyncio
+    async def test_activate_toolset_marks_tools_active(self, populated_dynamic_mcp):
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_pm = MagicMock()
+        mock_pm._server_configs = {
+            "memory": MagicMock(enabled=True),
+            "fetch": MagicMock(enabled=True),
+        }
+        mock_pm.is_process_server.return_value = True
+        populated_dynamic_mcp.load_tools_for_server = AsyncMock(return_value=[])
+
+        result = await populated_dynamic_mcp.activate_toolset("memory.graph", mock_pm)
+
+        assert result["ok"] is True
+        assert result["toolsets"] == ["memory.graph"]
+        assert "create_entities" in result["tools"]
+        assert "search_entities" in result["tools"]
+
+        active_defs = populated_dynamic_mcp.get_active_tool_definitions()
+        active_names = {tool["name"] for tool in active_defs}
+        assert {"create_entities", "search_entities"}.issubset(active_names)
+
+    @pytest.mark.asyncio
+    async def test_activate_server_name_activates_all_server_toolsets(self, populated_dynamic_mcp):
+        from unittest.mock import AsyncMock, MagicMock
+
+        mock_pm = MagicMock()
+        mock_pm._server_configs = {
+            "memory": MagicMock(enabled=True),
+            "fetch": MagicMock(enabled=True),
+        }
+        mock_pm.is_process_server.return_value = True
+        populated_dynamic_mcp.load_tools_for_server = AsyncMock(return_value=[])
+
+        result = await populated_dynamic_mcp.activate_toolset("memory", mock_pm)
+
+        assert result["ok"] is True
+        assert result["toolsets"] == ["memory.graph"]
+
+    @pytest.mark.asyncio
+    async def test_activate_unknown_toolset_returns_error(self, populated_dynamic_mcp):
+        from unittest.mock import MagicMock
+
+        mock_pm = MagicMock()
+        mock_pm._server_configs = {}
+
+        result = await populated_dynamic_mcp.activate_toolset("missing.toolset", mock_pm)
+
+        assert result["ok"] is False
+        assert "Unknown toolset" in result["message"]
+
+
+class TestAirisActivateHandler:
+    """Tests for the airis-activate handler."""
+
+    @pytest.mark.asyncio
+    async def test_handle_airis_activate_returns_text_response(self):
+        import json
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from app.api.endpoints.mcp_proxy import handle_airis_activate
+
+        rpc_request = {
+            "jsonrpc": "2.0",
+            "id": 11,
+            "params": {
+                "arguments": {
+                    "toolset": "stripe.customers",
+                }
+            }
+        }
+
+        mock_dynamic = MagicMock()
+        mock_dynamic.refresh_toolsets.return_value = None
+        mock_dynamic.activate_toolset = AsyncMock(return_value={
+            "ok": True,
+            "toolsets": ["stripe.customers"],
+            "tools": ["create_customer"],
+            "servers": ["stripe"],
+        })
+        mock_dynamic.get_server_for_tool.return_value = "stripe"
+
+        mock_pm = MagicMock()
+
+        with patch("app.api.endpoints.mcp_proxy.get_dynamic_mcp", return_value=mock_dynamic), \
+             patch("app.api.endpoints.mcp_proxy.get_process_manager", return_value=mock_pm):
+            response = await handle_airis_activate(rpc_request)
+
+        assert response.status_code == 200
+        body = json.loads(response.body)
+        text = body["result"]["content"][0]["text"]
+        assert "stripe.customers" in text
+        assert "stripe:create_customer" in text
+
+    @pytest.mark.asyncio
+    async def test_handle_airis_activate_requires_toolset(self):
+        import json
+
+        from app.api.endpoints.mcp_proxy import handle_airis_activate
+
+        rpc_request = {
+            "jsonrpc": "2.0",
+            "id": 12,
+            "params": {"arguments": {}}
+        }
+
+        response = await handle_airis_activate(rpc_request)
+
+        assert response.status_code == 200
+        body = json.loads(response.body)
+        assert body["error"]["message"] == "toolset is required"

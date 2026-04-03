@@ -183,24 +183,33 @@ DYNAMIC_MCP=false docker compose up -d
 - **command types**: `uvx` (Python), `npx` (Node.js), `sh` (Docker via shell), `node` (direct)
 - **mode**: `hot` (always loaded), `cold` (lazy loaded on demand)
 - **enabled**: `true` (active), `false` (discoverable but auto-enabled on use)
+- This file is the gateway runtime config, not a repo-local client config.
 
 ## Design Principles
 
 ### 1. Global Registration Only
-- MCP Gateway MUST be registered globally (`--scope user`), NOT per-project
-- Command: `claude mcp add --scope user --transport sse airis-mcp-gateway http://localhost:9400/sse`
+- MCP Gateway MUST be registered from a single global AIRIS registry, NOT per-project
+- Codex is managed via `airis-gateway init`
+- Claude Code may be registered globally with `claude mcp add --scope user --transport sse airis-mcp-gateway http://localhost:9400/sse`
+- Claude Desktop is intentionally unmanaged by AIRIS
 
 ### 2. ALL MCP Servers Through Gateway
 - All servers go through gateway - users don't register individual MCP servers
 - Dynamic enable/disable via `airis-exec` (auto-enable on use)
 - Add new servers to `mcp-config.json`, NOT as separate registrations
+- Repository-local `mcp.json` is forbidden after migration
 
 ### 3. One-Command Install
 ```bash
-cp mcp-config.json.example mcp-config.json  # First time only, customize as needed
-docker compose up -d
+airis-gateway up
+airis-gateway init
 ```
-- Register with Claude Code after startup
+- If repo-local `mcp.json` files exist, import and remove them:
+```bash
+airis-gateway import ~/github --apply
+airis-gateway clean ~/github
+airis-gateway doctor ~/github
+```
 
 ### 4. Auto-Start on Boot
 To ensure the gateway starts automatically on system reboot:

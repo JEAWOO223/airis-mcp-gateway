@@ -45,20 +45,30 @@ docker compose logs api | grep -i memory
 Codex should connect to the Streamable HTTP endpoint, not the SSE endpoint.
 
 ```bash
-# Remove the broken SSE registration if needed
-codex mcp remove airis-mcp-gateway
+# Re-sync Codex registration with the AIRIS global registry
+airis-gateway init
 
-# Re-add AIRIS using the Streamable HTTP endpoint
-codex mcp add airis-mcp-gateway --url http://localhost:9400/mcp
+# Verify there is no repo-local drift left behind
+airis-gateway doctor ~/github
 ```
 
 If you register `http://localhost:9400/sse` in Codex, Codex can fail during the `initialize` request because `/sse` is for SSE clients, while Codex expects the HTTP MCP endpoint at `/mcp`.
 
+### "repo-local mcp.json still exists"
+
+AIRIS treats repository-local `mcp.json` as migration input only. Once imported, it should be backed up and removed.
+
+```bash
+airis-gateway import ~/github --apply
+airis-gateway clean ~/github
+airis-gateway doctor ~/github
+```
+
 ### "Server not found"
 
 ```bash
-# Check mcp-config.json
-cat mcp-config.json | jq '.mcpServers | keys'
+# Check gateway runtime config
+cat ~/.local/share/airis-mcp-gateway/mcp-config.json | jq '.mcpServers | keys'
 
 # Restart after config changes
 docker compose restart api

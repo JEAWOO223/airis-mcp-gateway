@@ -2,46 +2,73 @@
 
 ## Overview
 
-AIRIS MCP Gateway uses **Dynamic MCP** - a token-efficient architecture that reduces context usage by 98% while providing access to 60+ tools.
+AIRIS should use Dynamic MCP to keep the initial tool surface small while still allowing direct use of native MCP tools.
+
+The key idea is:
+
+- do not expose every tool up front
+- do not force execution through a proxy meta-tool
+- activate only the capability slice that is needed
+- let the model call native tools directly after activation
 
 ## The Problem: Tool Bloat
 
-Traditional MCP exposes all tools directly:
+Traditional MCP exposes every tool directly:
 
+```text
+tools/list → 60+ tools × full descriptions and schemas
 ```
-tools/list → 60+ tools × ~700 tokens each = ~42,000 tokens
-```
 
-This bloats the LLM's context window, reducing available space for actual work.
+This bloats the model context and makes large providers harder to use.
 
-## The Solution: Meta-Tools
+The worst offenders are providers with many unrelated tools:
 
-Dynamic MCP exposes 3 core meta-tools (7 in full mode):
+- Stripe
+- Supabase
+- GitHub
+- browser automation
 
-| Meta-Tool | Purpose |
-|-----------|---------|
-| `airis-find` | Discover servers and tools |
-| `airis-exec` | Execute any tool |
-| `airis-schema` | Get tool input schema |
-| `airis-confidence` | Pre-implementation confidence check |
-| `airis-repo-index` | Generate repository structure overview |
-| `airis-suggest` | Tool recommendations from natural language |
-| `airis-route` | Route task to optimal tool chain |
+## The Lighter Solution
 
-```
-tools/list → 3 tools × ~200 tokens each = ~600 tokens (98% reduction)
-```
+Dynamic MCP should expose a small control plane instead of a giant flat tool catalog.
+
+Recommended control tools:
+
+| Tool | Purpose |
+|------|---------|
+| `airis-activate` | Activate a toolset or provider slice |
+| `airis-schema` | Get schema for a native tool when needed |
+| `airis-find` | Optional fallback search across tool and server metadata |
+
+Optional internal helpers may still exist, but they should not be the primary user-facing execution path.
+
+## What should not be primary anymore
+
+`airis-exec` should not be the main entrypoint.
+
+Why:
+
+- it recreates an execution layer on top of MCP
+- it adds another tool call before the real tool call
+- it pushes large tool listings into a meta-tool description
+- it hides native tool semantics behind a string indirection
+
+The preferred path is:
+
+1. activate capability
+2. refresh visible tools
+3. call native tool directly
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────┐
 │                    LLM Context                          │
 │  ┌─────────────────────────────────────────────────┐    │
-│  │  3 Meta-Tools (~600 tokens)                       │    │
-│  │  ├─ airis-find                                  │    │
-│  │  ├─ airis-exec                                  │    │
-│  │  └─ airis-schema                                │    │
+│  │  Small Control Plane                             │    │
+│  │  ├─ airis-activate                              │    │
+│  │  ├─ airis-schema                                │    │
+│  │  └─ airis-find (optional fallback)              │    │
 │  └─────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────┘
                            │
@@ -49,189 +76,128 @@ tools/list → 3 tools × ~200 tokens each = ~600 tokens (98% reduction)
 ┌─────────────────────────────────────────────────────────┐
 │                  Dynamic MCP Layer                       │
 │  ┌─────────────────────────────────────────────────┐    │
-│  │  Tool Cache (in-memory)                         │    │
-│  │  ├─ All servers (enabled + disabled)            │    │
-│  │  ├─ HOT server tools (pre-loaded)               │    │
-│  │  └─ COLD server tools (loaded on-demand)        │    │
+│  │  Capability Index                               │    │
+│  │  ├─ servers                                     │    │
+│  │  ├─ toolsets                                    │    │
+│  │  └─ tools                                       │    │
 │  └─────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────┐
 │                  ProcessManager                          │
-│  ├─ HOT servers: Always running                         │
-│  ├─ COLD servers: Start on-demand, idle-kill           │
-│  └─ Disabled servers: Auto-enable on airis-exec        │
+│  ├─ HOT: control-plane helpers                          │
+│  ├─ COLD: providers start on demand                     │
+│  └─ Disabled: gated by policy or credentials            │
 └─────────────────────────────────────────────────────────┘
 ```
 
-## Tool Calling Flow
+## Recommended request flow
 
-### One-Call Execution (Default)
+### Normal path
 
-`airis-exec` embeds a compact tool listing in its description, so LLMs already know every available tool:
+1. `tools/list` returns control tools plus any already-activated native tools
+2. The model decides which capability slice it needs
+3. AIRIS activates the matching toolset
+4. AIRIS emits `notifications/tools/list_changed`
+5. The model calls the native MCP tool directly
 
-```
-airis-exec description includes:
-  Available tools:
-  [memory] create_entities, search_nodes, add_observations
-  [stripe] create_customer, create_payment_intent, ...
-  [tavily] tavily-search, tavily-extract
-```
+Example:
 
-The LLM can call any tool directly without a discovery step:
+```text
+User: create a Stripe customer
 
-```
-LLM: airis-exec tool="stripe:create_customer" arguments={"email": "user@example.com"}
-
-Response:
-{ "id": "cus_xxx", "email": "user@example.com", ... }
+LLM: airis-activate toolset="stripe.customers"
+AIRIS: tools/list_changed
+LLM: stripe:create_customer { ... }
 ```
 
-If arguments are wrong, the full schema is returned automatically — the LLM retries with correct arguments on the next call. **Worst case: 2 calls.**
+### When schema is needed
 
-### Fallback: airis-find
-
-For tools not listed in `airis-exec` (e.g., after a server is newly added or disabled):
-
-```
-LLM: airis-find query="stripe"
-
-Response:
-Found 2 tools across 24 servers
-
-## Servers
-- **stripe** (cold, enabled): 50 tools
-
-## Tools
-- **stripe:create_customer** - Create a new customer
-- **stripe:create_payment_intent** - Create payment intent
-```
-
-### Fallback: airis-schema
-
-When a tool has complex arguments and you want to check before calling:
-
-```
+```text
 LLM: airis-schema tool="stripe:create_customer"
-
-Response:
-# stripe:create_customer
-
-**Server:** stripe
-**Description:** Create a new customer in Stripe
-
-## Input Schema
-{
-  "type": "object",
-  "properties": {
-    "email": { "type": "string" },
-    "name": { "type": "string" },
-    "metadata": { "type": "object" }
-  },
-  "required": ["email"]
-}
 ```
 
-## Auto-Enable Feature
+Use this only when arguments are unclear or the tool is structurally complex.
 
-Disabled servers are discoverable but not running. When `airis-exec` is called:
+### When search is needed
 
-1. **Server is auto-enabled** - No manual intervention needed
-2. **Tools are loaded** - Cached for future calls
-3. **Tool is executed** - Seamlessly
+`airis-find` should be treated as an optional fallback:
 
-```
-LLM: airis-exec tool="github:create_issue" arguments={...}
-→ [Server auto-enabled → Tools loaded → Executed]
-→ { "id": 123, "title": "...", ... }
-```
+- large provider catalogs
+- ambiguous intent
+- tool name not known
+- debugging capability exposure
 
-Even disabled servers work in one call — no need to find or enable them first.
+It should not be required for normal usage if the toolset structure is good.
 
-## Server Modes
+## Toolset activation
 
-| Mode | Behavior |
-|------|----------|
-| **HOT** | Always running, immediate response |
-| **COLD** | Start on-demand, idle-kill after timeout |
-| **Disabled** | Not running, auto-enable on airis-exec |
+Activation should happen at the toolset level, not the single-tool process level.
 
-### Why Disabled Servers?
+Examples:
 
-- **Resource efficiency**: Don't run servers you rarely use
-- **API key management**: Servers requiring API keys start disabled
-- **On-demand activation**: LLM enables when needed
+- `stripe.customers`
+- `stripe.billing`
+- `supabase.sql`
+- `supabase.auth`
 
-## Cache Behavior
+After activation:
 
-### Startup
+- the provider may be cold-started if needed
+- only that capability slice should become visible
+- native tools should become callable directly
 
-1. Cache ALL server metadata (enabled + disabled)
-2. Load tools from HOT servers only
-3. COLD/disabled server tools loaded on-demand
+## Hot / cold model
 
-### On airis-find
+### Hot by default
 
-1. Return cached server list (all servers)
-2. If specific server queried: load its tools on-demand
-3. Update cache with loaded tools
+- AIRIS control plane
+- lightweight shared helpers
 
-### On airis-exec
+### Cold by default
 
-1. Parse tool reference (e.g., `stripe:create_customer`)
-2. If server disabled: auto-enable
-3. If tools not cached: load on-demand
-4. Execute tool
-5. Return result
+- Stripe
+- Supabase
+- GitHub
+- browser automation
+- other large external providers
 
-## Configuration
+### Disabled by default
 
-### Enable/Disable Servers
+- admin or dangerous capabilities
+- providers without credentials
+- niche integrations irrelevant to the current workspace
 
-Edit `mcp-config.json`:
+## Metadata strategy
 
-```json
-{
-  "mcpServers": {
-    "stripe": {
-      "command": "npx",
-      "args": ["-y", "@stripe/mcp", "--api-key", "${STRIPE_SECRET_KEY}"],
-      "enabled": true,
-      "mode": "cold"
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" },
-      "enabled": false,
-      "mode": "cold"
-    }
-  }
-}
-```
+Do not expose full schemas everywhere.
 
-### Disable Dynamic MCP
+Maintain compact metadata per tool:
 
-For legacy mode (all tools exposed):
+- tool ref
+- toolset
+- one-line summary
+- tags
+- risk
+- auth requirement
 
-```bash
-DYNAMIC_MCP=false docker compose up -d
-```
+That metadata is enough to guide selection without paying the cost of large descriptions and schemas in every session.
 
 ## Comparison
 
-| Aspect | Traditional MCP | Dynamic MCP |
-|--------|-----------------|-------------|
-| Context usage | ~42,000 tokens | ~600 tokens |
-| Tool discovery | Implicit (all in context) | Embedded in airis-exec description |
-| Server management | Manual enable/disable | Auto-enable on use |
-| Cold start | User waits | Happens during airis-exec |
+| Aspect | Flat MCP | Old Dynamic MCP | Target Dynamic MCP |
+|--------|----------|-----------------|--------------------|
+| Initial tool surface | Huge | Small | Small |
+| Primary execution path | Native tools | `airis-exec` | Native tools |
+| Discovery style | Implicit | meta-tool heavy | activation-first |
+| Context cost | High | Medium | Lower |
+| Large-provider handling | Poor | Better | Better and simpler |
 
 ## Best Practices
 
-1. **Call airis-exec directly** - Tool listing is embedded in the description, no discovery step needed
-2. **Use airis-schema for complex tools** - When arguments are unclear, check before calling
-3. **Use airis-find as fallback** - Only when the tool you need isn't listed in airis-exec
-4. **Let airis-exec auto-enable** - Don't manually manage servers
-5. **Keep rarely-used servers disabled** - Resource efficiency
+1. Prefer direct native tool calls after activation.
+2. Keep `airis-find` as fallback, not default.
+3. Use `airis-schema` only when argument shape is unclear.
+4. Keep provider servers cold unless there is a strong reason to keep them hot.
+5. Use toolsets to expose coherent capability slices instead of entire providers.

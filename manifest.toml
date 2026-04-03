@@ -2,20 +2,17 @@
 name = "airis-mcp-gateway"
 version_file = "VERSION"
 
-[[packages]]
-name = "api"
-path = "apps/api"
-type = "python"
-version_file = "pyproject.toml"
+[commands]
+test = "curl -sf http://localhost:9400/health"
 
-[[packages]]
-name = "commands"
-path = "apps/airis-commands"
-type = "node"
-version_file = "package.json"
+[packages]
+workspaces = ["apps/*"]
 
-[[packages]]
-name = "gateway-control"
-path = "apps/gateway-control"
-type = "node"
-version_file = "package.json"
+[[packages.app]]
+pattern = "apps/api"
+
+[[packages.app]]
+pattern = "apps/airis-commands"
+
+[[packages.app]]
+pattern = "apps/gateway-control"
