@@ -50,15 +50,39 @@ class EncryptionManager:
         self.master_key = master_key
         self._fernet = self._create_fernet(master_key)
 
+    def _salt_path(self) -> Path:
+        return self._key_file_path.parent / "encryption_salt.bin"
+
+    def _get_or_create_salt(self) -> bytes:
+        """Load persisted salt or generate and store a new one."""
+        salt_path = self._salt_path()
+        try:
+            if salt_path.is_file():
+                return salt_path.read_bytes()
+        except OSError:
+            pass
+
+        salt = os.urandom(16)
+        try:
+            salt_path.parent.mkdir(parents=True, exist_ok=True)
+            salt_path.write_bytes(salt)
+            try:
+                os.chmod(salt_path, 0o600)
+            except OSError:
+                pass
+        except OSError as exc:
+            logger.warning(f"Failed to persist encryption salt to {salt_path}: {exc}")
+        return salt
+
     def _create_fernet(self, master_key: str) -> Fernet:
         """Create Fernet cipher from master key"""
-        # Use PBKDF2HMAC to derive a proper Fernet key
+        salt = self._get_or_create_salt()
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=b"airis-mcp-gateway-salt",  # Fixed salt for consistent keys
+            salt=salt,
             iterations=100000,
-            backend=default_backend()
+            backend=default_backend(),
         )
         key = base64.urlsafe_b64encode(kdf.derive(master_key.encode()))
         return Fernet(key)
