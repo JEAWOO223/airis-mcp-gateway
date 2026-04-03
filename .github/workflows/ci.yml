@@ -52,7 +52,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8
+        uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies
         run: |
@@ -74,7 +74,7 @@ jobs:
       - name: Security scan (bandit)
         run: |
           pip install bandit
-          bandit -r apps/api/src -ll -ii || true
+          bandit -r apps/api/src -ll -ii
 
   # TypeScript build and test (only when TS files change)
   build-typescript:
