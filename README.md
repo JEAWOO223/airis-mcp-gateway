@@ -23,6 +23,25 @@
 curl -fsSL https://raw.githubusercontent.com/agiletec-inc/airis-mcp-gateway/main/install.sh | bash
 ```
 
+### Development Setup
+
+```bash
+# 1. Copy and fill in your API keys
+cp .env.example .env
+
+# 2. Start the gateway
+docker compose up -d
+
+# 3. View logs
+docker compose logs -f api
+```
+
+> **Tip:** For secure secret management, use [Doppler](https://doppler.com) instead of `.env`:
+> ```bash
+> doppler setup                              # One-time setup
+> doppler run -- docker compose up -d        # Injects secrets at runtime
+> ```
+
 ### 2. Connect Your AI Client
 Register the gateway once, and access all backend MCP servers (Stripe, Supabase, GitHub, etc.) through a single connection.
 
