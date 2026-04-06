@@ -71,6 +71,7 @@ Casks/
 
 # Git worktrees
 .worktrees/
+.claude/worktrees/
 
 # Gemini CLI
 .gemini/
