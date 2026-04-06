@@ -190,7 +190,7 @@ DYNAMIC_MCP=false docker compose up -d
 ### 1. Global Registration Only
 - MCP Gateway MUST be registered from a single global AIRIS registry, NOT per-project
 - Codex is managed via `airis-gateway init`
-- Claude Code may be registered globally with `claude mcp add --scope user --transport sse airis-mcp-gateway http://localhost:9400/sse`
+- Claude Code uses the plugin system (`/install-plugin agiletec-inc/airis-mcp-gateway`) — do NOT use `claude mcp add` (causes duplicate MCP error with plugin)
 - Claude Desktop is intentionally unmanaged by AIRIS
 
 ### 2. ALL MCP Servers Through Gateway
