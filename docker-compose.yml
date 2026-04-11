@@ -111,6 +111,8 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
       - SUPABASE_ACCESS_TOKEN=${SUPABASE_ACCESS_TOKEN:-}
+      - MAGIC_API_KEY=${MAGIC_API_KEY:-}
+      - MORPH_API_KEY=${MORPH_API_KEY:-}
     volumes:
       - ./mcp-config.json:/app/mcp-config.json:ro
       - ./routing-table.json:/app/routing-table.json:ro

@@ -74,6 +74,23 @@ RUN chromium --version || echo "Chromium installed at /usr/bin/chromium"
 # Pre-install Playwright Chromium (uses system chromium, installs dependencies)
 RUN npx playwright install chromium --with-deps || echo "Playwright will use system Chromium"
 
+# Pre-install enabled MCP servers globally (npm install -g)
+# Eliminates npx download overhead — servers start instantly
+# Disabled servers are omitted — npx fetches them on-demand via auto-enable
+RUN npm install -g \
+    @upstash/context7-mcp \
+    @modelcontextprotocol/server-memory \
+    @modelcontextprotocol/server-sequential-thinking \
+    @modelcontextprotocol/server-github \
+    mcp-remote \
+    @supabase/mcp-server-supabase \
+    @21st-dev/magic \
+    @morphllm/morphmcp \
+    chrome-devtools-mcp
+
+# Pre-install Python MCP servers globally
+RUN uv pip install --system mcp-server-fetch mcp-server-git mcp-server-time
+
 WORKDIR /app
 
 # Copy MCP server sources and build them (bundled with esbuild, no node_modules needed at runtime)
