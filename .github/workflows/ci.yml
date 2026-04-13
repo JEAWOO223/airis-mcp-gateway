@@ -144,7 +144,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Ensure PR from stg to main exists
+      - name: Report stg status for promotion to main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -164,14 +164,26 @@ jobs:
             --jq '.[0].number // empty')
 
           if [ -n "${existing_pr}" ]; then
-            echo "Existing PR #${existing_pr} already open for stg -> main."
+            echo "Existing PR #${existing_pr} is open for stg -> main. Commenting with the new commit."
             gh pr comment "${existing_pr}" --body \
               "New commit landed on \`stg\` (${GITHUB_SHA}). CI passed — ready for review."
             exit 0
           fi
 
-          gh pr create \
-            --base main \
-            --head stg \
-            --title "stg -> main: automated promotion" \
-            --body "Automated promotion PR opened by CI after stg tests passed. Merge via the GitHub UI or the merge queue so the main branch ruleset is satisfied."
+          # No PR exists and GitHub Actions is not permitted to open one (the
+          # repo policy "Allow GitHub Actions to create and approve pull
+          # requests" is disabled). Report a green status with instructions so
+          # the CI stays actionable without a failing job.
+          cat <<EOT
+          No open PR from stg to main. stg has commits that need to be promoted.
+          Create the promotion PR manually with:
+
+              gh pr create --base main --head stg \\
+                --title "stg -> main: promotion" \\
+                --body "Promoting stg to main."
+
+          (GitHub Actions cannot open the PR automatically because the repo
+          setting "Allow GitHub Actions to create and approve pull requests"
+          is disabled. Enable it under Settings -> Actions -> General if you
+          want this job to create the PR itself.)
+          EOT

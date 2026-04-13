@@ -260,9 +260,30 @@ async def lifespan(app: FastAPI):
         name="periodic_queue_cleanup",
     )
 
+    # Start periodic cleanup of expired rate-limit entries so the in-memory
+    # store does not grow unbounded on long-running instances.
+    async def _periodic_rate_limit_cleanup():
+        from .middleware.rate_limit import get_rate_limit_store
+
+        store = get_rate_limit_store()
+        while True:
+            await asyncio.sleep(300)  # every 5 minutes
+            try:
+                removed = store.cleanup_expired()
+                if removed > 0:
+                    logger.info(f"Cleaned up {removed} expired rate-limit entries")
+            except Exception as e:
+                logger.warning(f"Rate limit cleanup error: {e}")
+
+    rate_limit_cleanup_task = _spawn_background_task(
+        _periodic_rate_limit_cleanup(),
+        name="periodic_rate_limit_cleanup",
+    )
+
     yield
 
     cleanup_task.cancel()
+    rate_limit_cleanup_task.cancel()
 
     # Graceful shutdown with timeout
     logger.info(f"Shutting down (timeout: {SHUTDOWN_TIMEOUT}s)...")
