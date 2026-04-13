@@ -96,7 +96,10 @@ jobs:
       - name: Install dependencies
         run: |
           cd apps/${{ matrix.package }}
-          npm install
+          # npm ci enforces that package-lock.json is in sync with
+          # package.json so a developer who forgot to regenerate the
+          # lockfile fails the build instead of silently drifting.
+          npm ci
 
       - name: Run tests
         run: |

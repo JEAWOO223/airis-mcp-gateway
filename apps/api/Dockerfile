@@ -2,7 +2,11 @@
 # FastAPI Hybrid MCP Gateway
 # Supports both Docker MCP Gateway proxy and direct uvx/npx process management
 # Includes browser automation support for Playwright and chrome-devtools MCP servers
-FROM python:3.12-slim
+#
+# Base image is pinned to a specific patch version (issue #77). Refresh this
+# tag via `docker pull python:3.12.13-slim-trixie` and verify `airis test`
+# before bumping.
+FROM python:3.12.13-slim-trixie
 
 # Keep apt lists across layers in a BuildKit cache so repeated builds don't
 # re-download the same packages. rm -rf is NOT needed because the cache mount
@@ -91,12 +95,13 @@ WORKDIR /app
 # reuse the cached npm install layer.
 #
 # Build gateway-control
+# Use `npm ci` so the lockfile must be in sync (issue #81).
 COPY apps/gateway-control/package*.json /tmp/gateway-control/
 COPY apps/gateway-control/tsconfig.json /tmp/gateway-control/
 COPY apps/gateway-control/src /tmp/gateway-control/src/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     cd /tmp/gateway-control \
-    && npm install \
+    && npm ci \
     && npm run build \
     && mkdir -p /app/gateway-control \
     && cp dist/index.js /app/gateway-control/ \
@@ -108,7 +113,7 @@ COPY apps/airis-commands/tsconfig.json /tmp/airis-commands/
 COPY apps/airis-commands/src /tmp/airis-commands/src/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     cd /tmp/airis-commands \
-    && npm install \
+    && npm ci \
     && npm run build \
     && mkdir -p /app/airis-commands \
     && cp dist/index.js /app/airis-commands/ \
