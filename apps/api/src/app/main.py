@@ -53,6 +53,33 @@ def _spawn_background_task(
     return task
 
 
+async def _wait_for_docker_gateway(timeout: float = 30.0) -> bool:
+    """Poll the Docker Gateway /health endpoint until it responds 200.
+
+    Uses exponential backoff so warm restarts recover quickly (~100ms) and
+    cold starts do not flood the gateway with requests.
+
+    Returns True on success, False on timeout.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    delay = 0.1
+    gateway_url = MCP_GATEWAY_URL.rstrip("/")
+
+    async with httpx.AsyncClient(timeout=1.0) as client:
+        while loop.time() < deadline:
+            try:
+                resp = await client.get(f"{gateway_url}/health")
+                if resp.status_code == 200:
+                    return True
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.HTTPError):
+                pass
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 1.0)
+
+    return False
+
+
 async def _precache_docker_gateway_tools():
     """
     Background task to pre-cache Docker Gateway tools at startup.
@@ -66,8 +93,10 @@ async def _precache_docker_gateway_tools():
     """
     import json
 
-    # Wait for Gateway to be fully ready
-    await asyncio.sleep(2.0)
+    # Wait for the Gateway to accept /health instead of sleeping blindly.
+    if not await _wait_for_docker_gateway(timeout=30.0):
+        logger.warning("[Startup] Docker Gateway did not become ready in 30s; skipping precache")
+        return
 
     gateway_url = MCP_GATEWAY_URL.rstrip("/")
     logger.info(f"[Startup] Pre-caching Docker Gateway tools...")
@@ -148,12 +177,19 @@ async def _precache_docker_gateway_tools():
                         if data_str.startswith("{"):
                             try:
                                 data = json.loads(data_str)
-                                if data.get("id") == 2 and "result" in data:
-                                    docker_tools = data["result"].get("tools", [])
-                                    logger.info(f"[Startup] Received {len(docker_tools)} tools from Gateway")
-                                    break
-                            except json.JSONDecodeError:
-                                pass
+                            except json.JSONDecodeError as e:
+                                # Surface the failure so stuck precache is diagnosable.
+                                logger.warning(
+                                    "[Startup] Discarding non-JSON SSE data from Gateway: %s (raw=%s)",
+                                    e,
+                                    data_str[:200],
+                                )
+                                continue
+
+                            if data.get("id") == 2 and "result" in data:
+                                docker_tools = data["result"].get("tools", [])
+                                logger.info(f"[Startup] Received {len(docker_tools)} tools from Gateway")
+                                break
 
                 # Cancel sender if still running
                 if sender_task and not sender_task.done():
@@ -244,16 +280,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"ProcessManager init failed: {e}")
 
-    # Start periodic cleanup of stale session queues
+    # Start periodic cleanup of stale session queues and stream bridges.
     async def _periodic_queue_cleanup():
         while True:
             await asyncio.sleep(600)  # every 10 minutes
             try:
-                removed = await mcp_proxy.cleanup_stale_queues()
-                if removed > 0:
-                    logger.info(f"Cleaned up {removed} stale session queue(s)")
+                removed_queues = await mcp_proxy.cleanup_stale_queues()
+                if removed_queues > 0:
+                    logger.info(f"Cleaned up {removed_queues} stale session queue(s)")
             except Exception as e:
                 logger.warning(f"Session queue cleanup error: {e}")
+
+            try:
+                removed_bridges = await mcp_proxy.cleanup_stale_stream_bridges()
+                if removed_bridges > 0:
+                    logger.info(f"Cleaned up {removed_bridges} stale stream bridge(s)")
+            except Exception as e:
+                logger.warning(f"Stream bridge cleanup error: {e}")
 
     cleanup_task = _spawn_background_task(
         _periodic_queue_cleanup(),
