@@ -4,6 +4,7 @@
   "description": "MCP server for controlling AIRIS MCP Gateway",
   "type": "module",
   "main": "dist/index.js",
+  "packageManager": "npm@10.9.7",
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
     "typecheck": "tsc --noEmit",
