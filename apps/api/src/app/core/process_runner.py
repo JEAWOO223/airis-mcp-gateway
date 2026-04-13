@@ -574,7 +574,7 @@ class ProcessRunner:
             raise ValueError("Request must have an id")
 
         # Create future for response
-        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending_requests[request_id] = future
 
         try:

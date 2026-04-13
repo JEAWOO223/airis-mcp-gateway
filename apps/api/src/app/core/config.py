@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     # Simple auth for single-user mode
     AIRIS_API_KEY: str | None = os.getenv("AIRIS_API_KEY", None)
 
+    # Deployment environment: "development" | "staging" | "production"
+    # Production enforces fail-closed on missing AIRIS_API_KEY / ALLOWED_ORIGINS.
+    ENV: str = os.getenv("ENV", "development").lower()
+
+    @property
+    def is_production(self) -> bool:
+        return self.ENV == "production"
+
     @property
     def is_lite_mode(self) -> bool:
         """Check if running in lite (stateless) mode"""
@@ -87,28 +95,48 @@ if not settings.CORS_ORIGINS:
     ]
 
 
+class InsecureProductionConfig(RuntimeError):
+    """Raised when ENV=production but required security settings are missing."""
+
+
 def validate_environment() -> list[str]:
     """
     Validate environment configuration at startup.
 
     Returns list of warnings for non-critical issues.
-    Raises ValueError for critical misconfigurations.
+    Raises InsecureProductionConfig for critical misconfigurations in production.
     """
     warnings = []
+    prod_errors: list[str] = []
 
     # Check ALLOWED_ORIGINS in production
     allowed_origins = os.getenv("ALLOWED_ORIGINS", "")
     if not allowed_origins or allowed_origins == "*":
-        warnings.append(
+        msg = (
             "ALLOWED_ORIGINS not set or set to '*'. "
             "Set explicit origins in production (e.g., ALLOWED_ORIGINS=https://app.example.com)"
         )
+        if settings.is_production:
+            prod_errors.append(msg)
+        else:
+            warnings.append(msg)
 
-    # Check API key in production (optional but recommended)
+    # Check API key - fail-closed in production, warn otherwise
     if not settings.AIRIS_API_KEY:
-        warnings.append(
+        msg = (
             "AIRIS_API_KEY not set. API authentication is disabled. "
-            "Set AIRIS_API_KEY for public-facing deployments."
+            "Management endpoints (/process/*, /sse, /api/*) are open to anyone "
+            "who can reach the API. Set AIRIS_API_KEY for public-facing deployments."
+        )
+        if settings.is_production:
+            prod_errors.append(msg)
+        else:
+            warnings.append(msg)
+
+    if prod_errors:
+        raise InsecureProductionConfig(
+            "Refusing to start with insecure configuration (ENV=production):\n  - "
+            + "\n  - ".join(prod_errors)
         )
 
     # Validate TOOL_CALL_TIMEOUT range
@@ -136,10 +164,19 @@ def validate_environment() -> list[str]:
 
 
 def log_startup_warnings() -> None:
-    """Log configuration warnings at startup."""
+    """Log configuration warnings at startup.
+
+    Raises InsecureProductionConfig if ENV=production and required security
+    settings are missing (fail-closed).
+    """
     import logging
     logger = logging.getLogger("airis.config")
 
-    warnings = validate_environment()
+    try:
+        warnings = validate_environment()
+    except InsecureProductionConfig as e:
+        logger.error("[Config] %s", e)
+        raise
+
     for warning in warnings:
         logger.warning(f"[Config] {warning}")
