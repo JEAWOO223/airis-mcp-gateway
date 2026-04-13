@@ -82,9 +82,10 @@ import time as _time_module
 
 _session_response_queues: dict[str, tuple[asyncio.Queue, float]] = {}
 _session_queues_lock = asyncio.Lock()
-_SESSION_QUEUE_TTL_SECONDS = 3600  # 1 hour
+_SESSION_QUEUE_TTL_SECONDS = 600  # 10 minutes — shorter than before to bound memory
 _stream_bridge_sessions: dict[str, "StreamBridgeSession"] = {}
 _stream_bridge_lock = asyncio.Lock()
+_STREAM_BRIDGE_TTL_SECONDS = 900  # 15 minutes idle before a bridge is torn down
 
 
 async def get_response_queue(session_id: str) -> asyncio.Queue:
@@ -130,6 +131,38 @@ async def cleanup_stale_queues() -> int:
 def get_session_queue_count() -> int:
     """Get current number of session queues (for monitoring)."""
     return len(_session_response_queues)
+
+
+async def cleanup_stale_stream_bridges() -> int:
+    """Tear down StreamBridgeSession entries that have been idle for too long.
+
+    Each bridge holds an open httpx.AsyncClient and an SSE reader task, so
+    a leaked bridge costs a file descriptor, a task, and a queue. Idle ones
+    need to be closed proactively — clients may disconnect without sending
+    a DELETE and a long-running gateway would otherwise accumulate them.
+    """
+    now = _time_module.monotonic()
+    threshold = now - _STREAM_BRIDGE_TTL_SECONDS
+    to_close: list[str] = []
+    async with _stream_bridge_lock:
+        for sid, session in _stream_bridge_sessions.items():
+            if session.closed or session.last_activity < threshold:
+                to_close.append(sid)
+
+    removed = 0
+    for sid in to_close:
+        try:
+            await _close_stream_bridge_session(sid)
+            removed += 1
+            logger.info("Cleaned up stale stream bridge session: %s", sid)
+        except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+            logger.warning("Error closing stale stream bridge %s: %s", sid, exc)
+    return removed
+
+
+def get_stream_bridge_count() -> int:
+    """Number of live StreamBridgeSession entries (for monitoring)."""
+    return len(_stream_bridge_sessions)
 
 
 class DescriptionMode:
@@ -321,6 +354,11 @@ class StreamBridgeSession:
     closed: bool = False
     reader_task: Optional[asyncio.Task] = None
     created_at: float = field(default_factory=_time_module.monotonic)
+    last_activity: float = field(default_factory=_time_module.monotonic)
+
+    def touch(self) -> None:
+        """Record that the client or backend just used this session."""
+        self.last_activity = _time_module.monotonic()
 
     async def close(self) -> None:
         if self.closed:
@@ -502,6 +540,8 @@ async def _send_via_stream_bridge(
             status_code=400,
             media_type="application/json",
         )
+
+    session.touch()
 
     # The Docker Gateway can briefly reject the first POST after the SSE stream
     # opens with "session not found". Let the backend session settle first.

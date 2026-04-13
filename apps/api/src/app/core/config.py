@@ -1,6 +1,43 @@
+import logging
 import os
 from pydantic_settings import BaseSettings
 from pathlib import Path
+
+
+_env_logger = logging.getLogger("airis.config")
+
+
+class InvalidEnvVar(RuntimeError):
+    """Raised when an environment variable cannot be parsed into its target type."""
+
+
+def _env_int(name: str, default: int) -> int:
+    """Parse an int env var, logging a clear error and raising on bad input.
+
+    Empty or unset -> default. Non-numeric -> InvalidEnvVar so the bad value
+    surfaces at import time instead of as an opaque ValueError deep in a
+    startup trace.
+    """
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        _env_logger.error("Invalid %s=%r (expected int): %s", name, raw, exc)
+        raise InvalidEnvVar(f"{name}={raw!r} is not a valid int") from exc
+
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env var, logging a clear error and raising on bad input."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        _env_logger.error("Invalid %s=%r (expected float): %s", name, raw, exc)
+        raise InvalidEnvVar(f"{name}={raw!r} is not a valid float") from exc
 
 DEFAULT_PROJECT_ROOT = Path(
     os.getenv(
@@ -75,7 +112,7 @@ class Settings(BaseSettings):
     # Tool Call Timeout (seconds)
     # Fail-safe timeout for MCP tool calls to prevent Claude Code from hanging indefinitely.
     # Applies to ProcessManager tool calls and Docker Gateway proxy requests.
-    TOOL_CALL_TIMEOUT: float = float(os.getenv("TOOL_CALL_TIMEOUT", "90"))
+    TOOL_CALL_TIMEOUT: float = _env_float("TOOL_CALL_TIMEOUT", 90.0)
 
     # CORS
     CORS_ORIGINS: list[str] = []
@@ -152,8 +189,8 @@ def validate_environment() -> list[str]:
         )
 
     # Validate rate limits
-    rate_limit_ip = int(os.getenv("RATE_LIMIT_PER_IP", "100"))
-    rate_limit_key = int(os.getenv("RATE_LIMIT_PER_API_KEY", "1000"))
+    rate_limit_ip = _env_int("RATE_LIMIT_PER_IP", 100)
+    rate_limit_key = _env_int("RATE_LIMIT_PER_API_KEY", 1000)
     if rate_limit_ip > rate_limit_key:
         warnings.append(
             f"RATE_LIMIT_PER_IP ({rate_limit_ip}) > RATE_LIMIT_PER_API_KEY ({rate_limit_key}). "
