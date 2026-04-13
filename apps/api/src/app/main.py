@@ -33,6 +33,25 @@ MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://gateway:9390")
 MCP_CONFIG_PATH = os.getenv("MCP_CONFIG_PATH", "/app/mcp-config.json")
 SHUTDOWN_TIMEOUT = int(os.getenv("SHUTDOWN_TIMEOUT", "30"))  # seconds
 
+# Retain strong references to background tasks so the GC does not collect
+# them mid-execution (see https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task).
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background_task(
+    coro,
+    *,
+    name: str | None = None,
+    on_error=None,
+) -> asyncio.Task:
+    """Create a background task that survives until it finishes on its own."""
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    if on_error is not None:
+        task.add_done_callback(on_error)
+    return task
+
 
 async def _precache_docker_gateway_tools():
     """
@@ -216,8 +235,11 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.info(f"[Startup] Docker Gateway pre-cache task failed: {e}")
 
-        precache_task = asyncio.create_task(_precache_docker_gateway_tools())
-        precache_task.add_done_callback(_handle_precache_error)
+        _spawn_background_task(
+            _precache_docker_gateway_tools(),
+            name="precache_docker_gateway_tools",
+            on_error=_handle_precache_error,
+        )
 
     except Exception as e:
         logger.error(f"ProcessManager init failed: {e}")
@@ -233,7 +255,10 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.warning(f"Session queue cleanup error: {e}")
 
-    cleanup_task = asyncio.create_task(_periodic_queue_cleanup())
+    cleanup_task = _spawn_background_task(
+        _periodic_queue_cleanup(),
+        name="periodic_queue_cleanup",
+    )
 
     yield
 
